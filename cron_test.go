@@ -678,6 +678,101 @@ func TestMultiThreadedStartAndStop(t *testing.T) {
 	cron.Stop()
 }
 
+func TestAddFuncByCustomID(t *testing.T) {
+	cron := New(WithParser(secondParser))
+	cron.Start()
+	defer cron.Stop()
+
+	err := cron.AddFuncByCustomID("*/5 * * * * *", func() {}, 100)
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+
+	err = cron.AddFuncByCustomID("*/5 * * * * *", func() {}, 100)
+	if err == nil {
+		t.Errorf("Expected an error for duplicate EntryID, got none")
+	}
+
+	err = cron.AddFuncByCustomID("not a cron spec", func() {}, 101)
+	if err == nil {
+		t.Errorf("Expected an error for invalid cron spec, got none")
+	}
+
+	// Concurrently add tasks
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if err := cron.AddFuncByCustomID("*/5 * * * * *", func() {}, 102); err != nil {
+			t.Error("Expected no error in concurrent add, got", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := cron.AddFuncByCustomID("*/10 * * * * *", func() {}, 103); err != nil {
+			t.Error("Expected no error in concurrent add, got", err)
+		}
+	}()
+	wg.Wait()
+}
+
+func TestAddFuncAndAddFuncByCustomIDConcurrent(t *testing.T) {
+	cron := New(WithParser(secondParser))
+	cron.Start()
+	defer cron.Stop()
+
+	wg := sync.WaitGroup{}
+	numGoroutines := 10
+	errors := make(chan error, numGoroutines)
+
+	sharedID := EntryID(1)
+	expectTaskCount := 6
+
+	// Concurrent Calls to AddFunc and AddFuncByCustomID
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			spec := fmt.Sprintf("*/%d * * * * *", i+1)
+			var err error
+			if i%2 == 1 {
+				// Half of the goroutines use AddFuncByCustomID, the same reason as below
+				if i >= 5 {
+					err = cron.AddFuncByCustomID(spec, func() {}, sharedID+10)
+				} else {
+					err = cron.AddFuncByCustomID(spec, func() {}, sharedID)
+					if err == nil {
+						expectTaskCount++
+					}
+				}
+			} else {
+				_, err = cron.AddFunc(spec, func() {})
+			}
+			if err != nil {
+				errors <- err
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	var errorCount int
+	for err := range errors {
+		if err != nil {
+			errorCount++
+		}
+	}
+
+	if errorCount == 0 {
+		t.Error("Expected at least one error due to duplicate EntryID, got none")
+	}
+
+	if len(cron.Entries()) != expectTaskCount {
+		t.Errorf("Expected %d unique entry, got %d", expectTaskCount, len(cron.Entries()))
+	}
+}
+
 func wait(wg *sync.WaitGroup) chan bool {
 	ch := make(chan bool)
 	go func() {

@@ -2,7 +2,7 @@ package cron
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -98,17 +98,17 @@ func (s byTime) Less(i, j int) bool {
 //
 // Available Settings
 //
-//   Time Zone
-//     Description: The time zone in which schedules are interpreted
-//     Default:     time.Local
+//	Time Zone
+//	  Description: The time zone in which schedules are interpreted
+//	  Default:     time.Local
 //
-//   Parser
-//     Description: Parser converts cron spec strings into cron.Schedules.
-//     Default:     Accepts this spec: https://en.wikipedia.org/wiki/Cron
+//	Parser
+//	  Description: Parser converts cron spec strings into cron.Schedules.
+//	  Default:     Accepts this spec: https://en.wikipedia.org/wiki/Cron
 //
-//   Chain
-//     Description: Wrap submitted jobs to customize behavior.
-//     Default:     A chain that recovers panics and logs them to stderr.
+//	Chain
+//	  Description: Wrap submitted jobs to customize behavior.
+//	  Default:     A chain that recovers panics and logs them to stderr.
 //
 // See "cron.With*" to modify the default behavior.
 func New(opts ...Option) *Cron {
@@ -141,8 +141,18 @@ func (f FuncJob) Run() { f() }
 func (c *Cron) AddFuncByCustomID(spec string, cmd func(), customID EntryID) error {
 	c.runningMu.Lock()
 	defer c.runningMu.Unlock()
-	if entry := c.Entry(customID); entry.ID != 0 {
-		return errors.New("a task numbered customID already exists")
+	var entries []Entry
+	if c.running {
+		replyChan := make(chan []Entry, 1)
+		c.snapshot <- replyChan
+		entries = <-replyChan
+	} else {
+		entries = c.entrySnapshot()
+	}
+	for _, entry := range entries {
+		if customID == entry.ID {
+			return fmt.Errorf("a task numbered customID: %v already exists", customID)
+		}
 	}
 	schedule, err := c.parser.Parse(spec)
 	if err != nil {
