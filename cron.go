@@ -2,6 +2,7 @@ package cron
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -134,6 +135,35 @@ func New(opts ...Option) *Cron {
 type FuncJob func()
 
 func (f FuncJob) Run() { f() }
+
+// AddFuncByCustomID and AddFunc lead to the same result.
+// the difference being that the EntryID is specified in the former.
+func (c *Cron) AddFuncByCustomID(spec string, cmd func(), customID EntryID) error {
+	c.runningMu.Lock()
+	defer c.runningMu.Unlock()
+	if entry := c.Entry(customID); entry.ID != 0 {
+		return errors.New("a task numbered customID already exists")
+	}
+	schedule, err := c.parser.Parse(spec)
+	if err != nil {
+		return err
+	}
+	if customID >= c.nextID {
+		c.nextID = customID + 1
+	}
+	entry := &Entry{
+		ID:         customID,
+		Schedule:   schedule,
+		WrappedJob: c.chain.Then(FuncJob(cmd)),
+		Job:        FuncJob(cmd),
+	}
+	if !c.running {
+		c.entries = append(c.entries, entry)
+	} else {
+		c.add <- entry
+	}
+	return nil
+}
 
 // AddFunc adds a func to the Cron to be run on the given schedule.
 // The spec is parsed using the time zone of this Cron instance as the default.
